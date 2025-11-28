@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>リアルタイム表情トラッカー</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Face-api.js -->
+    <script src="https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js"></script>
+    <style>
+        body {
+            background-color: #1a202c;
+            color: white;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow-x: hidden;
+        }
+        .canvas-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+        .video-container {
+            position: relative;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            border-radius: 1rem;
+            overflow: hidden;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
+            background-color: #000;
+            min-height: 300px;
+        }
+        video {
+            display: block;
+            border-radius: 1rem;
+            max-width: 100%;
+            height: auto;
+        }
+        .emoji-display {
+            font-size: 4rem;
+            animation: bounce 1s infinite alternate;
+        }
+        @keyframes bounce {
+            from { transform: translateY(0); }
+            to { transform: translateY(-10px); }
+        }
+        #loading-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.8);
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 50;
+            border-radius: 1rem;
+        }
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.1);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border-left-color: #4ade80;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center py-8 px-4">
+
+    <header class="text-center mb-6">
+        <h1 class="text-3xl md:text-4xl font-bold mb-2 text-green-400">表情を数値化</h1>
+        <p class="text-gray-400">カメラを見つめると、あなたの今の表情から感情を分析します</p>
+    </header>
+
+    <main class="w-full max-w-4xl grid grid-cols-1 lg:grid-cols-3 gap-6">
+        
+        <!-- Main Video Area -->
+        <div class="lg:col-span-2">
+            <div class="video-container" id="videoContainer">
+                <!-- Loading Overlay -->
+                <div id="loading-overlay">
+                    <div class="spinner mb-4"></div>
+                    <p class="text-lg font-semibold animate-pulse">AIモデルを読み込み中...</p>
+                    <p class="text-xs text-gray-400 mt-2">初回は時間がかかる場合があります</p>
+                </div>
+                
+                <video id="video" autoplay muted playsinline></video>
+                <!-- Canvas will be appended here by JS -->
+            </div>
+            <div class="mt-4 text-center">
+                <p id="status-text" class="text-sm text-gray-400">カメラの許可を待っています...</p>
+            </div>
+        </div>
+
+        <!-- Analysis Panel -->
+        <div class="bg-gray-800 p-6 rounded-2xl shadow-lg border border-gray-700 flex flex-col justify-between">
+            <div>
+                <h2 class="text-xl font-bold mb-4 border-b border-gray-600 pb-2">現在の気分</h2>
+                
+                <div class="flex flex-col items-center justify-center py-6 bg-gray-900 rounded-xl mb-6 transition-all duration-300" id="mood-card">
+                    <div id="mood-emoji" class="emoji-display mb-2">🤔</div>
+                    <div id="mood-text" class="text-3xl font-bold text-white">分析中...</div>
+                    <div id="mood-confidence" class="text-sm text-gray-400 mt-1">信頼度: -%</div>
+                </div>
+
+                <h3 class="text-sm font-semibold text-gray-400 mb-2 uppercase tracking-wider">感情パラメータ</h3>
+                <div class="space-y-3" id="stats-container">
+                    <!-- Progress bars will be injected here -->
+                    <div class="text-center text-gray-500 text-sm">顔を検出していません</div>
+                </div>
+            </div>
+
+            <div class="mt-6 pt-4 border-t border-gray-700 text-xs text-gray-500 text-center">
+                Processing locally in browser using face-api.js
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const video = document.getElementById('video');
+        const videoContainer = document.getElementById('videoContainer');
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const statusText = document.getElementById('status-text');
+        const moodText = document.getElementById('mood-text');
+        const moodEmoji = document.getElementById('mood-emoji');
+        const moodConfidence = document.getElementById('mood-confidence');
+        const moodCard = document.getElementById('mood-card');
+        const statsContainer = document.getElementById('stats-container');
+
+        // Translation map for emotions
+        const emotionMap = {
+            neutral: { label: '普通', emoji: '😐', color: 'bg-gray-500', text: 'text-gray-200' },
+            happy: { label: '幸せ', emoji: '😄', color: 'bg-yellow-500', text: 'text-yellow-400' },
+            sad: { label: '悲しい', emoji: '😢', color: 'bg-blue-600', text: 'text-blue-400' },
+            angry: { label: '怒り', emoji: '😡', color: 'bg-red-600', text: 'text-red-500' },
+            fearful: { label: '恐れ', emoji: '😨', color: 'bg-purple-600', text: 'text-purple-400' },
+            disgusted: { label: '嫌悪', emoji: '🤢', color: 'bg-green-600', text: 'text-green-500' },
+            surprised: { label: '驚き', emoji: '😲', color: 'bg-pink-500', text: 'text-pink-400' }
+        };
+
+        // Base URL for models (using the official GitHub pages for stability)
+        // Note: In a production app, these should be hosted locally to avoid rate limits or cors issues.
+        const MODEL_URL = 'https://justadudewhohacks.github.io/face-api.js/models';
+
+        Promise.all([
+            faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL),
+            faceapi.nets.faceLandmark68Net.loadFromUri(MODEL_URL),
+            faceapi.nets.faceRecognitionNet.loadFromUri(MODEL_URL),
+            faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URL)
+        ]).then(startVideo).catch(err => {
+            console.error(err);
+            statusText.textContent = "モデルの読み込みに失敗しました。ページを再読み込みしてください。";
+            statusText.classList.add('text-red-500');
+        });
+
+        function startVideo() {
+            statusText.textContent = "カメラを起動しています...";
+            navigator.mediaDevices.getUserMedia({ video: {} })
+                .then(stream => {
+                    video.srcObject = stream;
+                })
+                .catch(err => {
+                    console.error(err);
+                    loadingOverlay.innerHTML = '<p class="text-red-400 text-center px-4">カメラへのアクセスが拒否されました。<br>ブラウザの設定を確認してください。</p>';
+                    statusText.textContent = "エラー: カメラが見つからないか許可されていません。";
+                });
+        }
+
+        video.addEventListener('play', () => {
+            // Remove loading screen once video starts playing
+            loadingOverlay.style.display = 'none';
+            statusText.textContent = "リアルタイム分析中";
+            statusText.classList.add('text-green-400');
+
+            // Create canvas
+            const canvas = faceapi.createCanvasFromMedia(video);
+            canvas.className = 'canvas-overlay pointer-events-none';
+            videoContainer.append(canvas);
+
+            const displaySize = { width: video.videoWidth, height: video.videoHeight };
+            faceapi.matchDimensions(canvas, displaySize);
+
+            // Analysis Loop
+            setInterval(async () => {
+                const detections = await faceapi.detectAllFaces(video, new faceapi.TinyFaceDetectorOptions())
+                    .withFaceLandmarks()
+                    .withFaceExpressions();
+
+                const resizedDetections = faceapi.resizeResults(detections, displaySize);
+                
+                // Clear and draw
+                canvas.getContext('2d').clearRect(0, 0, canvas.width, canvas.height);
+                
+                // Draw detection box and landmarks
+                faceapi.draw.drawDetections(canvas, resizedDetections);
+                faceapi.draw.drawFaceLandmarks(canvas, resizedDetections);
+                // Optionally draw expression text on canvas too
+                // faceapi.draw.drawFaceExpressions(canvas, resizedDetections);
+
+                if (detections.length > 0) {
+                    // Assume the first face is the primary user
+                    const expressions = detections[0].expressions;
+                    updateUI(expressions);
+                } else {
+                    resetUI();
+                }
+
+                // Handle resize event to keep canvas aligned
+                if (canvas.width !== video.clientWidth || canvas.height !== video.clientHeight) {
+                     const displaySizeNew = { width: video.clientWidth, height: video.clientHeight };
+                     faceapi.matchDimensions(canvas, displaySizeNew);
+                }
+
+            }, 100);
+        });
+
+        function updateUI(expressions) {
+            // Find dominant emotion
+            const sorted = Object.keys(expressions).sort((a, b) => expressions[b] - expressions[a]);
+            const dominant = sorted[0];
+            const probability = expressions[dominant];
+            
+            const data = emotionMap[dominant];
+
+            // Update Mood Card
+            moodEmoji.textContent = data.emoji;
+            moodText.textContent = data.label;
+            moodText.className = `text-3xl font-bold ${data.text}`;
+            moodConfidence.textContent = `信頼度: ${Math.round(probability * 100)}%`;
+            
+            // Subtle background change based on mood
+            // moodCard.className = `flex flex-col items-center justify-center py-6 rounded-xl mb-6 transition-colors duration-500 border-2 border-opacity-50 ${data.color.replace('bg-', 'border-')} bg-gray-900`;
+
+            // Update Stats Bars
+            let statsHtml = '';
+            sorted.forEach(emotion => {
+                const percent = Math.round(expressions[emotion] * 100);
+                const info = emotionMap[emotion];
+                
+                // Only show bars with significant values (>0)
+                if (percent > 0) {
+                    statsHtml += `
+                        <div class="w-full">
+                            <div class="flex justify-between text-xs mb-1">
+                                <span>${info.label}</span>
+                                <span>${percent}%</span>
+                            </div>
+                            <div class="w-full bg-gray-700 rounded-full h-2">
+                                <div class="${info.color} h-2 rounded-full transition-all duration-300" style="width: ${percent}%"></div>
+                            </div>
+                        </div>
+                    `;
+                }
+            });
+            statsContainer.innerHTML = statsHtml;
+        }
+
+        function resetUI() {
+            moodEmoji.textContent = '🔍';
+            moodText.textContent = '顔を探しています';
+            moodText.className = 'text-2xl font-bold text-gray-500';
+            moodConfidence.textContent = '-';
+            statsContainer.innerHTML = '<div class="text-center text-gray-500 text-sm py-4">カメラに顔を映してください</div>';
+        }
+    </script>
+</body>
+</html>
